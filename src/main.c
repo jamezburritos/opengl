@@ -8,11 +8,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
-// convenience macros
-#define X 0
-#define Y 1
-#define Z 2
+#include "camera.h"
+#include "shader.h"
 
 // vertex data
 float vertices[] = {
@@ -59,19 +58,13 @@ float vertices[] = {
     -0.5f,  0.5f, -0.5f,  0.0f, 1.0f
 };
 
-// indexed vertices
-unsigned int indices[] = {
-    0, 1, 3,
-    1, 2, 3
-};
-
 // window size
 unsigned int window_w = 800;
 unsigned int window_h = 600;
 
 // camera
-vec3 cameraPos, cameraDirection, cameraRight, cameraUp, cameraFront;
-float pitch, roll, yaw, fov;
+camera cam;
+float fov;
 
 // time
 float deltaTime;
@@ -80,8 +73,6 @@ float deltaTime;
 float curX, curY;
 
 // forward-declarations
-char* loadFile(const char *filename);
-
 void framebuffer_resize_callback(GLFWwindow *window, int w, int h);
 void cursor_callback(GLFWwindow *window, double x, double y);
 void scroll_callback(GLFWwindow *window, double xoffset, double yoffset);
@@ -96,8 +87,8 @@ int main()
 
     // glfw: start & set version
     glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     // glfw: create a window
@@ -117,9 +108,8 @@ int main()
     glfwSetScrollCallback(window, scroll_callback);
 
     // glad: load GL functions
-    if (!gladLoadGL())
-    {
-        printf("Failed to initialise GLAD.");
+    if (!gladLoadGL()) {
+        fprintf(stderr, "Failed to initialise GLAD.");
         return -1;
     }
 
@@ -147,70 +137,17 @@ int main()
      * Generate and compile shaders
      */
 
-    int success;
-    char infoLog[512];
-
-    // vertex shader
-    unsigned int vertexShader;
-    vertexShader = glCreateShader(GL_VERTEX_SHADER);
-
-    const char* vertexShaderSource = loadFile("./shader/vertex.glsl");
-
-    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
-    glCompileShader(vertexShader);
-
-    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
-
-    if (!success)
-    {
-        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
-        printf("Vertex shader compilation failed:\n%s\n", infoLog);
-    }
-
-    // fragment shader
-    unsigned int fragmentShader;
-    fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-
-    const char* fragmentShaderSource = loadFile("./shader/fragment.glsl");
-
-    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
-    glCompileShader(fragmentShader);
-
-    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
-
-    if (!success)
-    {
-        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
-        printf("Fragment shader compilation failed:\n%s\n", infoLog);
-    }
+    shader vertexShader, fragmentShader;
+    shader_loadFile("./shader/vertex.glsl", GL_VERTEX_SHADER, &vertexShader);
+    shader_loadFile("./shader/fragment.glsl", GL_FRAGMENT_SHADER, &fragmentShader);
 
     /*
      * Create a shader program and attach shaders.
-     * Set up uniform values for the shaders.
      * Delete the shaders when it's done, we don't need them anymore
      */
 
-    // shader program
-    unsigned int shaderProgram;
-    shaderProgram = glCreateProgram();
-
-    glUseProgram(shaderProgram);
-
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
-
-    if (!success)
-    {
-        glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
-        printf("Program linking failed:\n%s\n", infoLog);
-    }
-
-    // clean up shaders
-    free((void *) vertexShaderSource);
-    free((void *) fragmentShaderSource);
+    program shaderProgram;
+    shader_createProgram(&shaderProgram, 2, vertexShader, fragmentShader);
 
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
@@ -219,10 +156,10 @@ int main()
      * Set up uniform values.
      */
 
-    unsigned int u_time = glGetUniformLocation(shaderProgram, "time");
-    unsigned int u_model = glGetUniformLocation(shaderProgram, "model");
-    unsigned int u_view = glGetUniformLocation(shaderProgram, "view");
-    unsigned int u_projection = glGetUniformLocation(shaderProgram, "projection");
+    uniform u_time = glGetUniformLocation(shaderProgram, "time");
+    uniform u_model = glGetUniformLocation(shaderProgram, "model");
+    uniform u_view = glGetUniformLocation(shaderProgram, "view");
+    uniform u_projection = glGetUniformLocation(shaderProgram, "projection");
 
     mat4 model, view, projection;
 
@@ -242,12 +179,6 @@ int main()
 
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-    // element-array buffer
-    unsigned int EBO;
-    glGenBuffers(1, &EBO);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
     // vertex attributes
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);                     // vertex coords
@@ -260,16 +191,13 @@ int main()
      * Setup camera
      */
 
-    glm_vec3_zero(cameraPos);
-    vec3 up = { 0.0, 1.0, 0.0 };
-
-    fov = 45.0;
+    cam = cam_create((vec3) { 0, 0, 0 }, (vec3) { 0, 0, 0 });
+    fov = 45;
 
     /*
      * Process the event-loop
      */
 
-    // set the default background color
     glClearColor(0.6f, 0.6f, 0.8f, 1.0f);
     glEnable(GL_DEPTH_TEST);
 
@@ -290,40 +218,27 @@ int main()
         glUseProgram(shaderProgram);
 
         glm_mat4_identity(model);
-        glm_mat4_identity(view);
         glm_mat4_identity(projection);
 
         // model
 
         // view
-        cameraDirection[X] = cos(glm_rad(yaw)) * cos(glm_rad(pitch));
-        cameraDirection[Y] = sin(glm_rad(pitch));
-        cameraDirection[Z] = sin(glm_rad(yaw)) * cos(glm_rad(pitch));
-
-        glm_vec3_normalize(cameraDirection);
-
-        glm_cross(up, cameraDirection, cameraRight);
-        glm_vec3_normalize(cameraRight);
-
-        glm_cross(cameraDirection, cameraRight, cameraUp);
+        cam_update(&cam);
 
         printf("\033c");
-        printf("pos: %.1f, %.1f, %.1f\n", cameraPos[X], cameraPos[Y], cameraPos[Z]);
-        printf("pitch: %.1f, roll: %.1f, yaw: %.1f\n", pitch, roll, yaw);
+        printf("pos: %.1f, %.1f, %.1f\n", cam.pos[X], cam.pos[Y], cam.pos[Z]);
+        printf("pitch: %.1f, roll: %.1f, yaw: %.1f\n", cam.eulers[PITCH], cam.eulers[ROLL], cam.eulers[YAW]);
         printf("fov: %.1f\n", fov);
-
-        glm_look(cameraPos, cameraDirection, cameraUp, view);
 
         // projection
         glm_perspective(glm_rad(fov), (float) window_w / (float) window_h, 0.1, 100.0, projection);
 
         glUniformMatrix4fv(u_model, 1, GL_FALSE, (float *) model);
-        glUniformMatrix4fv(u_view, 1, GL_FALSE, (float *) view);
+        glUniformMatrix4fv(u_view, 1, GL_FALSE, (float *) cam.view);
         glUniformMatrix4fv(u_projection, 1, GL_FALSE, (float *) projection);
 
         glUniform1f(u_time, currentTime);
 
-        // glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         glDrawArrays(GL_TRIANGLES, 0, 36);
 
         // glfw: swap buffers, poll events
@@ -332,30 +247,11 @@ int main()
     }
 
     /*
-     * Exit nicely
+     * Exit cleanly
      */
 
     glfwTerminate();
     return 0;
-}
-
-char* loadFile(const char* filename)
-{
-    FILE *fp = fopen(filename, "r");
-
-    char *buf;
-    size_t flen;
-
-    fseek(fp, 0, SEEK_END);
-    flen = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    buf = (char *) malloc(flen + 1);
-    fread(buf, 1, flen, fp);
-
-    buf[flen] = '\0';
-
-    return buf;
 }
 
 void framebuffer_resize_callback(GLFWwindow *window, int w, int h)
@@ -376,11 +272,13 @@ void cursor_callback(GLFWwindow *window, double x, double y)
     xoffset *= sensitivity;
     yoffset *= sensitivity;
 
-    pitch += yoffset;
-    yaw += xoffset;
+    cam.eulers[PITCH] += yoffset;
+    cam.eulers[YAW] += xoffset;
 
-    if (pitch > 89.0)  pitch = 89.0;
-    if (pitch < -89.0) pitch = -89.0;
+    if (cam.eulers[PITCH] > 89.0)  cam.eulers[PITCH] = 89.0;
+    if (cam.eulers[PITCH] < -89.0) cam.eulers[PITCH] = -89.0;
+
+    cam.eulers[YAW] = fmod(cam.eulers[YAW], 360.0f);
 }
 
 void scroll_callback(GLFWwindow *window, double xoffset, double yoffset)
@@ -393,45 +291,52 @@ void scroll_callback(GLFWwindow *window, double xoffset, double yoffset)
 
 void processInput(GLFWwindow *window)
 {
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+    #define key(KEYNAME) if (glfwGetKey(window, KEYNAME) == GLFW_PRESS)
+
+    key(GLFW_KEY_ESCAPE) {
         glfwSetWindowShouldClose(window, 1);
+    }
 
     const float cameraSpeed =
         ((glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) ? 10.0 : 5.0) * deltaTime;
 
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+    key(GLFW_KEY_W) {
         vec3 transform;
-        glm_vec3_scale(cameraDirection, cameraSpeed, transform);
-        glm_vec3_add(cameraPos, transform, cameraPos);
+        glm_vec3_scale(cam.dir, cameraSpeed, transform);
+        glm_vec3_add(cam.pos, transform, cam.pos);
     }
 
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+    key(GLFW_KEY_S) {
         vec3 transform;
-        glm_vec3_scale(cameraDirection, cameraSpeed, transform);
-        glm_vec3_sub(cameraPos, transform, cameraPos);
+        glm_vec3_scale(cam.dir, cameraSpeed, transform);
+        glm_vec3_sub(cam.pos, transform, cam.pos);
     }
 
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+    key(GLFW_KEY_A) {
         vec3 transform;
-        glm_vec3_scale(cameraRight, cameraSpeed, transform);
-        glm_vec3_add(cameraPos, transform, cameraPos);
+        glm_vec3_scale(cam.right, cameraSpeed, transform);
+        glm_vec3_add(cam.pos, transform, cam.pos);
     }
 
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+    key(GLFW_KEY_D) {
         vec3 transform;
-        glm_vec3_scale(cameraRight, cameraSpeed, transform);
-        glm_vec3_sub(cameraPos, transform, cameraPos);
+        glm_vec3_scale(cam.right, cameraSpeed, transform);
+        glm_vec3_sub(cam.pos, transform, cam.pos);
     }
 
-    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+    key(GLFW_KEY_SPACE) {
         vec3 transform;
-        glm_vec3_scale(cameraUp, cameraSpeed, transform);
-        glm_vec3_add(cameraPos, transform, cameraPos);
+        glm_vec3_scale(cam.up, cameraSpeed, transform);
+        glm_vec3_add(cam.pos, transform, cam.pos);
     }
 
-    if (glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS) {
+    key(GLFW_KEY_C) {
         vec3 transform;
-        glm_vec3_scale(cameraUp, cameraSpeed, transform);
-        glm_vec3_sub(cameraPos, transform, cameraPos);
+        glm_vec3_scale(cam.up, cameraSpeed, transform);
+        glm_vec3_sub(cam.pos, transform, cam.pos);
+    }
+
+    key(GLFW_KEY_Z) {
+        cam_lookat(&cam, (vec3) { 0, 0, 0 });
     }
 }

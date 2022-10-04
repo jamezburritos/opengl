@@ -7,17 +7,18 @@ OUTFILE := build.out
 SRC := src
 OBJ := obj
 INC := include
+LIB := lib
 
 SOURCES := $(wildcard $(SRC)/*.c)
 OBJECTS := $(patsubst $(SRC)/%.c, $(OBJ)/%.o, $(SOURCES))
 
 $(OBJ)/%.o: $(SRC)/%.c
-	$(CC) $(CFLAGS) -c -I$(INC) -o $@ $<
+	$(CC) $(CFLAGS) -c -I$(INC) -I$(LIB) -o $@ $<
 
 .PHONY: build run clean
 
 build: $(OBJECTS)
-	$(CC) $(CFLAGS) -I$(INC) $^ -o $(OUTFILE)
+	$(CC) $(CFLAGS) -I$(INC) -I$(LIB) $^ -o $(OUTFILE)
 
 run:
 	./$(OUTFILE)
